@@ -20,15 +20,16 @@
 
 namespace MSP\DevTools\Plugin\PhpEnvironment;
 
-use Laminas\Http\PhpEnvironment\Response;
-use Magento\Framework\App\Response\Http as HttpResponse;
-use Magento\Framework\Json\EncoderInterface;
-use MSP\DevTools\Model\CanInjectCode;
+use HttpResponse;
 use MSP\DevTools\Model\Config;
-use MSP\DevTools\Model\ElementRegistry;
-use MSP\DevTools\Model\EventRegistry;
-use MSP\DevTools\Model\IsInjectableContentType;
 use MSP\DevTools\Model\PageInfo;
+use MSP\DevTools\Model\CanInjectCode;
+use MSP\DevTools\Model\EventRegistry;
+use MSP\DevTools\Model\ElementRegistry;
+use Laminas\Http\PhpEnvironment\Response;
+use Magento\Framework\Json\EncoderInterface;
+use MSP\DevTools\Model\IsInjectableContentType;
+use Magento\Framework\App\Response\Http as HttpResponse;
 
 class ResponsePlugin
 {
@@ -62,6 +63,15 @@ class ResponsePlugin
      */
     private $canInjectCode;
 
+    /**
+     * @var string[] Media types to exclude from profiling data injection
+     */
+    private $ignoreMediaTypes = [
+        'application/javascript',
+        'application/json'
+    ];
+
+
     public function __construct(
         EncoderInterface $encoder,
         ElementRegistry $elementRegistry,
@@ -85,28 +95,43 @@ class ResponsePlugin
         $res = $proceed();
         if ($this->canInjectCode->execute() && $this->isInjectableContentType->execute($subject)) {
             if ($subject instanceof HttpResponse) {
-                $this->elementRegistry->calcTimers();
-                $this->eventRegistry->calcTimers();
+                if ($subject instanceof HttpResponse) {
+                    /**
+                     * Exit early when it's an ignored content type
+                     */
+                    foreach ($subject->getHeaders() as $header) {
+                        if ($header instanceof \Laminas\Http\Header\ContentType) {
+                            if (in_array($header->getMediaType(), $this->ignoreMediaTypes)) {
+                                return $res;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
 
-                $pageInfo = $this->pageInfo->getPageInfo();
-                // @codingStandardsIgnoreStart
-                // Yes, ok, sorry for this... the only way I found to raw output here is to use "echo"
-                // Any better idea is highly appreciated.
-                echo '<script type="text/javascript">';
-                echo 'if (!window.mspDevTools) { window.mspDevTools = {}; }';
-                foreach ($pageInfo as $key => $info) {
-                    echo 'window.mspDevTools["' . $key . '"] = ' . $this->encoder->encode($info) . ';';
+                    $this->elementRegistry->calcTimers();
+                    $this->eventRegistry->calcTimers();
+
+                    $pageInfo = $this->pageInfo->getPageInfo();
+                    // @codingStandardsIgnoreStart
+                    // Yes, ok, sorry for this... the only way I found to raw output here is to use "echo"
+                    // Any better idea is highly appreciated.
+                    echo '<script type="text/javascript">';
+                    echo 'if (!window.mspDevTools) { window.mspDevTools = {}; }';
+                    foreach ($pageInfo as $key => $info) {
+                        echo 'window.mspDevTools["'.$key.'"] = '.$this->encoder->encode($info).';';
+                    }
+                    echo 'window.mspDevTools["_protocol"] = '.Config::PROTOCOL_VERSION.';';
+                    echo '</script>';
+
+                    // We must use superglobals since profiler classes cannot access to object manager or DI system
+                    // See \MSP\DevTools\Profiler\Driver\Standard\Output\DevTools
+                    $GLOBALS['msp_devtools_profiler'] = true;
+                    // @codingStandardsIgnoreEnd
                 }
-                echo 'window.mspDevTools["_protocol"] = ' . Config::PROTOCOL_VERSION . ';';
-                echo '</script>';
-
-                // We must use superglobals since profiler classes cannot access to object manager or DI system
-                // See \MSP\DevTools\Profiler\Driver\Standard\Output\DevTools
-                $GLOBALS['msp_devtools_profiler'] = true;
-                // @codingStandardsIgnoreEnd
             }
-        }
 
+        }
         return $res;
     }
 }
